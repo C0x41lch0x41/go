@@ -9,7 +9,7 @@ When run on the terminal it:
     i. Asks for your public key
     ii. Outputs if the transaction has a valid signature or not
  b. If in signature mode (default)
-    i. Asks for your private seed or public key if -verify is used.
+    i. Asks for your private seed
     ii. Outputs a new envelope with your signature added.
 
 ## Installing
