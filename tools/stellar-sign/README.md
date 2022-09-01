@@ -25,7 +25,7 @@ $ stellar-sign --help
 Usage of ./stellar-sign:
   -infile string
     	transaction envelope
-  -test
+  -testnet
     	Sign or verify the transaction using Testnet passphrase instead of Public
   -verify
     	Verify the transaction instead of signing

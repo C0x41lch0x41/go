@@ -23,9 +23,10 @@ import (
 )
 
 type SignOrVerify struct {
-	verify  bool
-	privKey *keypair.Full
-	pubKey  *keypair.FromAddress
+	verify            bool
+	networkPassphrase string
+	privKey           *keypair.Full
+	pubKey            *keypair.FromAddress
 }
 
 func (router *SignOrVerify) setKey(input string) {
@@ -45,51 +46,78 @@ func (router *SignOrVerify) setKey(input string) {
 	}
 }
 
-func (router *SignOrVerify) do(gentx *txnbuild.GenericTransaction, networkPassphrase string) (string, error) {
-	var newEnv string
+func (router *SignOrVerify) doVerify(gentx *txnbuild.GenericTransaction) error {
 	var err error
-	if router.verify {
-		var signature []byte
-		var body []byte
-		var gentxEnv xdr.TransactionEnvelope
-		gentxEnv, err = gentx.ToXDR()
+	var gentxHash [32]byte
+	var gentxEnv xdr.TransactionEnvelope
+	gentxEnv, err = gentx.ToXDR()
+	if err != nil {
+		log.Fatal(err)
+	}
+	signatures := gentxEnv.Signatures()
+	gentxHash, err = gentx.Hash(router.networkPassphrase)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if gentxEnv.IsFeeBump() {
+		signatures = gentxEnv.FeeBumpSignatures()
+		gentxFeeBump, ok := gentx.FeeBump()
+		if !ok {
+			log.Fatal("Cannot find the correct transaction type")
+		}
+		gentxHash, err = gentxFeeBump.Hash(router.networkPassphrase)
 		if err != nil {
 			log.Fatal(err)
 		}
-		signature = gentxEnv.Signatures()[0].Signature
-		gentxHash, _ := gentx.Hash(networkPassphrase)
-		body = gentxHash[:]
-		err = router.pubKey.Verify(body, signature)
-	} else {
-		if tx, ok := gentx.Transaction(); ok {
-			tx, err = tx.Sign(networkPassphrase, router.privKey)
-			if err != nil {
-				log.Fatal(err)
-			}
-			newEnv, err = tx.Base64()
-			if err != nil {
-				log.Fatal(err)
-			}
-		} else {
-			tx, _ := gentx.FeeBump()
-			tx, err = tx.Sign(networkPassphrase, router.privKey)
-			if err != nil {
-				log.Fatal(err)
-			}
-			newEnv, err = tx.Base64()
-			if err != nil {
-				log.Fatal(err)
-			}
+	}
+	if len(signatures) == 0 {
+		log.Fatal("The transaction does not contain any signature")
+	}
+	// We try all signature and stop if we find a correct one
+	for _, signature := range signatures {
+		err = router.pubKey.Verify(gentxHash[:], signature.Signature)
+		if err == nil {
+			break
 		}
 	}
-	return newEnv, err
+	return err
+}
+
+func (router *SignOrVerify) doSign(gentx *txnbuild.GenericTransaction) string {
+	var newEnv string
+	var err error
+	if tx, ok := gentx.Transaction(); ok {
+		tx, err = tx.Sign(router.networkPassphrase, router.privKey)
+		if err != nil {
+			log.Fatal(err)
+		}
+		newEnv, err = tx.Base64()
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		var txFeeBump *txnbuild.FeeBumpTransaction
+		txFeeBump, ok = gentx.FeeBump()
+		if !ok {
+			log.Fatal("Cannot find the correct transaction type")
+		}
+		txFeeBump, err = txFeeBump.Sign(router.networkPassphrase, router.privKey)
+		if err != nil {
+			log.Fatal(err)
+		}
+		newEnv, err = txFeeBump.Base64()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	return newEnv
 }
 
 var in *bufio.Reader
 
 var infile = flag.String("infile", "", "transaction envelope")
 var verify = flag.Bool("verify", false, "Verify the transaction instead of signing")
-var testnet = flag.Bool("test", false, "Testnet")
+var testnet = flag.Bool("testnet", false, "Sign or verify the transaction using Testnet passphrase instead of Public")
 
 func main() {
 	flag.Parse()
@@ -130,22 +158,35 @@ func main() {
 		log.Fatal(err)
 	}
 
+	isFeeBump := txe.IsFeeBump()
+
 	fmt.Println("")
 	fmt.Println("Transaction Summary:")
 	sourceAccount := txe.SourceAccount().ToAccountId()
 	fmt.Printf("  type: %s\n", txe.Type.String())
+	if isFeeBump {
+		fmt.Printf("  fee bump source: %s\n", txe.FeeBumpAccount().ToAccountId().Address())
+	}
 	fmt.Printf("  source: %s\n", sourceAccount.Address())
 	fmt.Printf("  ops: %d\n", len(txe.Operations()))
 	fmt.Printf("  sigs: %d\n", len(txe.Signatures()))
 	for _, signature := range txe.Signatures() {
 		fmt.Printf("    %s\n", b64.StdEncoding.EncodeToString(signature.Signature))
 	}
-	if txe.IsFeeBump() {
+	if isFeeBump {
 		fmt.Printf("  fee bump sigs: %d\n", len(txe.FeeBumpSignatures()))
+		for _, feeBumpSignature := range txe.FeeBumpSignatures() {
+			fmt.Printf("    %s\n", b64.StdEncoding.EncodeToString(feeBumpSignature.Signature))
+		}
 	}
 	fmt.Println("")
 
 	// TODO: add operation details
+
+	passPhrase := network.PublicNetworkPassphrase
+	if *testnet {
+		passPhrase = network.TestNetworkPassphrase
+	}
 
 	// read seed/public key
 	key, err := readLine("Enter key", true)
@@ -153,7 +194,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	flowRouter := &SignOrVerify{verify: *verify}
+	flowRouter := &SignOrVerify{verify: *verify, networkPassphrase: passPhrase}
 	flowRouter.setKey(key)
 
 	parsed, err := txnbuild.TransactionFromXDR(env)
@@ -161,18 +202,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	passPhrase := network.PublicNetworkPassphrase
-	if *testnet {
-		passPhrase = network.TestNetworkPassphrase
-	}
-	newEnv, err := flowRouter.do(parsed, passPhrase)
 	if *verify {
+		err := flowRouter.doVerify(parsed)
 		if err != nil {
 			fmt.Print("\nSignature is INVALID\n")
 		} else {
 			fmt.Print("\nSignature is VALID\n")
 		}
 	} else {
+		newEnv := flowRouter.doSign(parsed)
 		fmt.Print("\n==== Result ====\n\n")
 		fmt.Print("```\n")
 		fmt.Println(newEnv)
