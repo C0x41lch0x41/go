@@ -31,7 +31,8 @@ type SignOrVerify struct {
 func (router *SignOrVerify) setKey(input string) {
 	var err error
 	if router.verify {
-		inputPubKey, err := keypair.Parse(input)
+		var inputPubKey keypair.KP
+		inputPubKey, err = keypair.Parse(input)
 		if err != nil {
 			log.Fatal(err)
 		}
