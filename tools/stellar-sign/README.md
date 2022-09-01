@@ -1,6 +1,6 @@
 # Stellar Sign
 
-This folder contains `stellar-sign` a simple utility to make it easy to add your signature to a transaction envelope or to verify a transactio signature with a public key.  
+This folder contains `stellar-sign` a simple utility to make it easy to add your signature to a transaction envelope or to verify a transaction signature with a public key.  
 When run on the terminal it:
 
 1.  Prompts your for a base64-encoded envelope
